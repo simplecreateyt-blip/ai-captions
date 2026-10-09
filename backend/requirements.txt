@@ -1,0 +1,13 @@
+# Core API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9      # required for UploadFile / Form parsing
+python-dotenv>=1.0
+
+# Groq client + media tooling
+groq>=1.7.0
+imageio-ffmpeg>=0.5.1        # bundles the ffmpeg binary used for audio extraction
+truststore>=0.9.1            # optional: fixes TLS verification on locked-down hosts
+
+# Optional: local transcription engine (engine="local"). ~1 GB of wheels.
+# faster-whisper>=1.0
