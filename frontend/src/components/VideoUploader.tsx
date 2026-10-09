@@ -71,6 +71,15 @@ export default function VideoUploader({ onUploadSuccess }: VideoUploaderProps) {
     const targetUrl = `${API_BASE}/api/upload`;
     xhr.open("POST", targetUrl);
 
+    try {
+      const userGroqKey = localStorage.getItem("user_groq_key") || localStorage.getItem("groq_api_key");
+      if (userGroqKey && userGroqKey.trim()) {
+        xhr.setRequestHeader("x-groq-key", userGroqKey.trim());
+      }
+    } catch {
+      // Safely ignore localStorage access errors
+    }
+
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
         const percentComplete = Math.round((event.loaded / event.total) * 100);

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -236,8 +236,8 @@ app.add_middleware(
     allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["x-request-id"],
+    allow_headers=["*", "x-groq-key", "X-Groq-Key"],
+    expose_headers=["x-request-id", "x-groq-key"],
 )
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
@@ -614,9 +614,8 @@ def transcribe_file(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     "code": "missing_api_key",
-                    "message": "GROQ_API_KEY is not configured.",
-                    "hint": "Add GROQ_API_KEY=gsk_... to backend/.env "
-                            "(get one at console.groq.com) or enter it in the app.",
+                    "message": "No valid Groq API key was found.",
+                    "hint": "Please provide your personal Groq API key via the 'x-groq-key' HTTP header (or in the UI settings) or configure GROQ_API_KEY in the server environment (get a free key at console.groq.com).",
                 },
             )
 
@@ -733,9 +732,14 @@ async def health_check():
 
 
 @app.get("/api/diagnose")
-async def diagnose(groq_api_key: Optional[str] = None):
+@app.get("/diagnose")
+async def diagnose(
+    groq_api_key: Optional[str] = None,
+    x_groq_key: Optional[str] = Header(None, alias="x-groq-key"),
+):
     """Live check: key validity, served models, and a real chat round-trip."""
-    report = await run_in_threadpool(diagnose_groq, groq_api_key)
+    effective_key = (x_groq_key or groq_api_key or "").strip() or None
+    report = await run_in_threadpool(diagnose_groq, effective_key)
     report["server"] = {
         "version": "2.1.0",
         "local_engine_available": LOCAL_ENGINE_AVAILABLE,
@@ -1404,6 +1408,7 @@ async def parse_srt_endpoint(file: UploadFile = File(...)):
 
 @app.post("/api/export")
 @app.post("/api/export/")
+@app.post("/export")
 async def export_video(
     request: Request,
 ):
@@ -1643,12 +1648,14 @@ async def export_video(
 
 
 @app.post("/api/process-video")
+@app.post("/process-video")
 async def process_video(
     file: UploadFile = File(...),
     srt_file: Optional[UploadFile] = File(None),
     target_language: str = Form("Hinglish"),
     style: str = Form("hormozi"),
     groq_api_key: Optional[str] = Form(None),
+    x_groq_key: Optional[str] = Header(None, alias="x-groq-key"),
 ):
     extension = validate_upload(file)
     language = normalise_language(target_language)
@@ -1705,13 +1712,14 @@ async def process_video(
                 "warnings": ["Custom .srt loaded; AI transcription skipped."],
             }
         else:
+            effective_groq_key = (x_groq_key or groq_api_key or "").strip() or None
             result = await run_in_threadpool(
                 run_transcription,
                 destination,
                 "groq",
                 language,
                 style_id,
-                groq_api_key,
+                effective_groq_key,
                 "base",
                 None,
                 warnings,
@@ -1754,7 +1762,11 @@ async def process_video(
 
 
 @app.post("/api/transcribe")
-async def transcribe(request: TranscribeRequest):
+@app.post("/transcribe")
+async def transcribe(
+    request: TranscribeRequest,
+    x_groq_key: Optional[str] = Header(None, alias="x-groq-key"),
+):
     video_path = find_video_by_id(request.file_id)
     if video_path is None:
         raise HTTPException(
@@ -1793,13 +1805,14 @@ async def transcribe(request: TranscribeRequest):
             logger.warning("Discarding unreadable cache %s: %s", cache_path, error)
             cache_path.unlink(missing_ok=True)
 
+    effective_groq_key = (x_groq_key or request.groq_api_key or "").strip() or None
     result = await run_in_threadpool(
         run_transcription,
         video_path,
         engine,
         language,
         style,
-        request.groq_api_key,
+        effective_groq_key,
         request.model_size or "base",
         request.language,
         warnings,

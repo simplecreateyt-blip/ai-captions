@@ -50,7 +50,11 @@ import {
   Ratio,
   Ban,
   Activity,
+  ShieldCheck,
 } from "lucide-react";
+import { useGroqKey } from "@/hooks/useGroqKey";
+import ApiKeyModal from "./ApiKeyModal";
+import AdRewardModal from "./AdRewardModal";
 
 const PRO_STYLE_ICONS: Record<string, any> = {
   tharun_classic: Flame,
@@ -283,23 +287,10 @@ export default function VideoPreview({ videoData, onReset }: VideoPreviewProps) 
     setCustomAccent(null);
   };
 
-  // Groq API Key state
-  const [groqApiKey, setGroqApiKey] = useState<string>("");
-  const [showApiKeyInput, setShowApiKeyInput] = useState(false);
-
-  useEffect(() => {
-    const savedKey = localStorage.getItem("groq_api_key");
-    if (savedKey) setGroqApiKey(savedKey);
-  }, []);
-
-  const handleApiKeyChange = (val: string) => {
-    setGroqApiKey(val);
-    if (val.trim()) {
-      localStorage.setItem("groq_api_key", val.trim());
-    } else {
-      localStorage.removeItem("groq_api_key");
-    }
-  };
+  // Groq BYOK API Key & Rewarded Ad Modal state
+  const { apiKey: groqApiKey, hasPersonalKey } = useGroqKey();
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [isAdModalOpen, setIsAdModalOpen] = useState(false);
 
   // Optional SRT state
   const [srtFile, setSrtFile] = useState<File | null>(videoData.srtFile || null);
@@ -470,16 +461,22 @@ export default function VideoPreview({ videoData, onReset }: VideoPreviewProps) 
     ];
 
     try {
+      const effectiveKey = groqApiKey.trim();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (effectiveKey) {
+        headers["x-groq-key"] = effectiveKey;
+      }
+
       const response = await fetch(`${API_BASE}/api/transcribe`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         signal: controller.signal,
         body: JSON.stringify({
           file_id: videoData.fileId,
           target_language: targetLanguage,
           style: selectedStyle,
           engine: "groq",
-          groq_api_key: groqApiKey.trim() || undefined,
+          groq_api_key: effectiveKey || undefined,
           force: options?.force ?? false,
         }),
       });
@@ -506,8 +503,8 @@ export default function VideoPreview({ videoData, onReset }: VideoPreviewProps) 
         setErrorMessage(err?.message || "An unexpected error occurred.");
         setErrorCode((prev) => prev ?? "client_error");
         if (typeof err?.message === "string" &&
-            /api key|unauthor|401/i.test(err.message)) {
-          setShowApiKeyInput(true);
+            /api key|unauthor|401|missing_api_key/i.test(err.message)) {
+          setIsApiKeyModalOpen(true);
         }
       }
     } finally {
@@ -564,7 +561,7 @@ export default function VideoPreview({ videoData, onReset }: VideoPreviewProps) 
     return (captionData.segments ?? []) as CaptionGroup[];
   }, [captionData, selectedTemplate.id]);
 
-  const handleDownloadEditedVideo = async () => {
+  const executeExport = async () => {
     if (proStyleId !== "none" && !srtFile && !captionGroups?.length) return;
 
     setIsExporting(true);
@@ -596,8 +593,15 @@ export default function VideoPreview({ videoData, onReset }: VideoPreviewProps) 
         );
       }
 
+      const headers: Record<string, string> = {};
+      const effectiveKey = groqApiKey.trim();
+      if (effectiveKey) {
+        headers["x-groq-key"] = effectiveKey;
+      }
+
       const response = await fetch(`${API_BASE}/api/export`, {
         method: "POST",
+        headers,
         body: formData,
       });
 
@@ -632,6 +636,25 @@ export default function VideoPreview({ videoData, onReset }: VideoPreviewProps) 
       setIsExporting(false);
     }
   };
+
+  const triggerVideoDownload = async () => {
+    await executeExport();
+  };
+
+  const handleExportClick = () => {
+    if (proStyleId !== "none" && !srtFile && !captionGroups?.length) return;
+
+    const userApiKey = localStorage.getItem("user_groq_key");
+    if (userApiKey && userApiKey.trim() !== "") {
+      // User has BYOK -> instant export with zero ads
+      triggerVideoDownload();
+    } else {
+      // Free user -> open AdRewardModal
+      setIsAdModalOpen(true);
+    }
+  };
+
+  const handleDownloadEditedVideo = handleExportClick;
 
   return (
     <div className="w-full space-y-8">
@@ -1067,47 +1090,46 @@ export default function VideoPreview({ videoData, onReset }: VideoPreviewProps) 
               </select>
             </div>
 
-            {/* API Key Toggle */}
-            <div className="pt-1">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-[11px] text-zinc-400">
-                  {groqApiKey
-                    ? "Using the GROQ_API_KEY saved in this browser"
-                    : "Using backend/.env GROQ_API_KEY"}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setShowApiKeyInput(!showApiKeyInput)}
-                  className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 underline"
-                >
-                  <Key className="h-3 w-3" />
-                  {showApiKeyInput ? "Hide API Key input" : "Change / Enter Key"}
-                </button>
-              </div>
+            {/* Groq API Key BYOK Card */}
+            <div className="pt-2">
+              <div
+                className={`rounded-2xl p-3 border transition-all ${
+                  hasPersonalKey
+                    ? "bg-emerald-950/20 border-emerald-500/30 text-emerald-300"
+                    : "bg-amber-950/20 border-amber-500/30 text-amber-300"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    {hasPersonalKey ? (
+                      <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <Key className="h-4 w-4 text-amber-400 shrink-0" />
+                    )}
+                    <div>
+                      <span className="text-xs font-bold block">
+                        {hasPersonalKey
+                          ? "Using Personal Key (Unlimited)"
+                          : "Using Free Server Tier (Ads required)"}
+                      </span>
+                      <span className="text-[10px] text-zinc-400 block">
+                        {hasPersonalKey
+                          ? "Fast Whisper turbo & instant ad-free exports"
+                          : "Add your free key for unlimited instant exports"}
+                      </span>
+                    </div>
+                  </div>
 
-              {showApiKeyInput && (
-                <div className="mt-2 flex items-center gap-2">
-                  <input
-                    type="password"
-                    value={groqApiKey}
-                    onChange={(e) => handleApiKeyChange(e.target.value)}
-                    placeholder="gsk_..."
-                    className="flex-1 rounded-xl bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:border-cyan-400 focus:outline-none"
-                  />
-                  <span className="text-[10px] text-zinc-500">
-                    (Saved in browser)
-                  </span>
-                  {groqApiKey && (
-                    <button
-                      type="button"
-                      onClick={() => handleApiKeyChange("")}
-                      className="text-[10px] text-rose-300 hover:text-rose-200 underline"
-                    >
-                      Clear
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsApiKeyModalOpen(true)}
+                    className="inline-flex items-center gap-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-200 border border-zinc-700 transition cursor-pointer shrink-0"
+                  >
+                    <Key className="h-3 w-3 text-cyan-400" />
+                    <span>{hasPersonalKey ? "Settings" : "Add Key"}</span>
+                  </button>
                 </div>
-              )}
+              </div>
             </div>
 
             {/* Generate Button */}
@@ -1558,6 +1580,23 @@ export default function VideoPreview({ videoData, onReset }: VideoPreviewProps) 
           />
         </div>
       )}
+
+      {/* Global Modals for BYOK & Rewarded Ad Flow */}
+      <ApiKeyModal
+        isOpen={isApiKeyModalOpen}
+        onClose={() => setIsApiKeyModalOpen(false)}
+      />
+      <AdRewardModal
+        isOpen={isAdModalOpen}
+        onClose={() => setIsAdModalOpen(false)}
+        onComplete={() => {
+          setIsAdModalOpen(false);
+          triggerVideoDownload();
+        }}
+        onOpenKeyModal={() => {
+          setIsApiKeyModalOpen(true);
+        }}
+      />
     </div>
   );
 }
